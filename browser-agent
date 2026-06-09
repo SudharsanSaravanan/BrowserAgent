@@ -658,6 +658,38 @@ def migrate_profile_if_needed() -> None:
                 print(f"Could not migrate legacy profile directory: {e}")
 
 
+def _hide_chrome_windows(pid: int) -> None:
+    """
+    On Windows: enumerate every top-level window belonging to the given PID
+    and call ShowWindow(hwnd, SW_HIDE) on each one.
+    This removes the window from both the screen AND the taskbar while
+    leaving the Chrome process alive and fully functional.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        SW_HIDE = 0
+        user32   = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+        def _callback(hwnd, _):
+            win_pid = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(win_pid))
+            if win_pid.value == pid:
+                user32.ShowWindow(hwnd, SW_HIDE)
+            return True  # keep enumerating
+
+        user32.EnumWindows(EnumWindowsProc(_callback), 0)
+    except Exception as exc:
+        # Non-fatal — the browser still works, it just won't be hidden
+        print(f"[warn] Could not hide Chrome window: {exc}")
+
+
 async def rcv_web_int(
     model: str,
     payload: ClipboardPayload,
@@ -698,10 +730,11 @@ async def rcv_web_int(
                     "--no-default-browser-check",
                 ]
                 if not headful:
-                    # On Windows, we launch headfully but minimized to bypass Cloudflare and Turnstile challenges
-                    cmd.append("--window-state=minimized")
+                    # Position the window far off-screen so it never flashes visible,
+                    # then we hide it completely via the Win32 API after CDP connects.
+                    cmd += ["--window-position=-32000,-32000", "--window-size=1,1"]
                 try:
-                    subprocess.Popen(cmd)
+                    chrome_proc = subprocess.Popen(cmd)
                 except FileNotFoundError:
                     raise RuntimeError(
                         f"Could not find or launch Chrome/Edge executable. Tried path: {chrome_path}. "
@@ -742,6 +775,12 @@ async def rcv_web_int(
                             f"Could not connect to {browser_name} after 10 attempts. "
                             f"Make sure '{browser_name}' is installed and not blocked."
                         )
+
+            # After a successful CDP connection, completely hide the Chrome window
+            # (removes it from both the screen and the taskbar)
+            if os.name == "nt" and not headful:
+                await asyncio.sleep(0.5)  # Give Chrome a moment to draw its initial window
+                _hide_chrome_windows(chrome_proc.pid)
 
         page = await _find_page(browser, model)
         if not page:
