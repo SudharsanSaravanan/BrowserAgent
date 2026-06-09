@@ -658,12 +658,17 @@ def migrate_profile_if_needed() -> None:
                 print(f"Could not migrate legacy profile directory: {e}")
 
 
-def _hide_chrome_windows(pid: int) -> None:
+def _hide_chrome_windows(_pid_unused: int = 0) -> None:
     """
-    On Windows: enumerate every top-level window belonging to the given PID
-    and call ShowWindow(hwnd, SW_HIDE) on each one.
-    This removes the window from both the screen AND the taskbar while
-    leaving the Chrome process alive and fully functional.
+    On Windows: enumerate every top-level window with the Chrome window
+    class ('Chrome_WidgetWin_1') and:
+      1. Strip WS_EX_APPWINDOW  — removes the taskbar button immediately.
+      2. Set  WS_EX_TOOLWINDOW  — keeps it off the taskbar permanently.
+      3. Call ShowWindow(SW_HIDE) — makes the window itself invisible.
+
+    We match by class name, NOT by PID, because Chrome spawns child
+    processes and the visible window is owned by one of those children,
+    not by the top-level process we launched.
     """
     if os.name != "nt":
         return
@@ -671,22 +676,32 @@ def _hide_chrome_windows(pid: int) -> None:
         import ctypes
         import ctypes.wintypes
 
-        SW_HIDE = 0
-        user32   = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        SW_HIDE         = 0
+        GWL_EXSTYLE     = -20
+        WS_EX_APPWINDOW = 0x00040000   # shows in taskbar
+        WS_EX_TOOLWINDOW = 0x00000080  # hides from taskbar
+        CHROME_CLASS    = "Chrome_WidgetWin_1"
 
-        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        user32 = ctypes.windll.user32
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM
+        )
 
         def _callback(hwnd, _):
-            win_pid = ctypes.wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(win_pid))
-            if win_pid.value == pid:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, buf, 256)
+            if buf.value == CHROME_CLASS:
+                # Remove taskbar presence
+                ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+                # Hide the window completely
                 user32.ShowWindow(hwnd, SW_HIDE)
             return True  # keep enumerating
 
         user32.EnumWindows(EnumWindowsProc(_callback), 0)
     except Exception as exc:
-        # Non-fatal — the browser still works, it just won't be hidden
+        # Non-fatal — browser still works, just not invisible
         print(f"[warn] Could not hide Chrome window: {exc}")
 
 
@@ -776,11 +791,12 @@ async def rcv_web_int(
                             f"Make sure '{browser_name}' is installed and not blocked."
                         )
 
-            # After a successful CDP connection, completely hide the Chrome window
-            # (removes it from both the screen and the taskbar)
+            # After a successful CDP connection, completely hide the Chrome window.
+            # Run twice: once now (startup window) and schedule another pass for
+            # after the AI tab opens (which creates a second Chrome_WidgetWin_1).
             if os.name == "nt" and not headful:
-                await asyncio.sleep(0.5)  # Give Chrome a moment to draw its initial window
-                _hide_chrome_windows(chrome_proc.pid)
+                await asyncio.sleep(0.8)  # Let Chrome draw its initial window
+                _hide_chrome_windows()
 
         page = await _find_page(browser, model)
         if not page:
@@ -793,6 +809,9 @@ async def rcv_web_int(
             page = await ctx.new_page()
             await page.goto(urls[model], wait_until="domcontentloaded")
             await page.wait_for_timeout(2000)
+            # Hide again: navigating opens a new tab which can briefly appear
+            if os.name == "nt" and not headful:
+                _hide_chrome_windows()
 
         # If we are just launching in headful mode to log in and the payload is empty
         if headful and payload.kind == ClipboardKind.EMPTY:
