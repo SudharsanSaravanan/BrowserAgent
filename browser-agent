@@ -1,4 +1,4 @@
-#!/home/dwarakesh/envv/bin/python3
+#!/usr/bin/env python3
 
 import asyncio
 import base64
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
 import json
+import sys
 from pathlib import Path
 
 import pyperclip
@@ -176,7 +177,6 @@ EDITOR_SELECTORS: dict[str, list[str]] = {
 }
 
 # Selectors for hidden file inputs triggered by the attachment button.
-# All three UIs funnel uploads through a plain <input type="file">.
 FILE_INPUT_SELECTORS: dict[str, list[str]] = {
     "claude": [
         'input[type="file"][accept*="image"]',
@@ -613,7 +613,7 @@ async def _wait_for_response_stable(page: Page, model: str) -> str:
                     timeout_ms=500, state="visible"
                 )
                 if stop_sel is None:
-                    return current_text   # ✓ stable + stop button gone
+                     return current_text   # ✓ stable + stop button gone
                 stable_since = None       # still generating — keep waiting
         else:
             last_text    = current_text
@@ -641,9 +641,27 @@ async def _find_page(browser, model: str) -> Optional[Page]:
     return None
 
 
+def migrate_profile_if_needed() -> None:
+    """
+    Rename legacy 'headless-gpt-chrome-profile' directory to 'browser-agent-chrome-profile'
+    to seamlessly preserve existing login sessions.
+    """
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+        old_profile = os.path.join(local_app_data, "headless-gpt-chrome-profile")
+        new_profile = os.path.join(local_app_data, "browser-agent-chrome-profile")
+        if os.path.exists(old_profile) and not os.path.exists(new_profile):
+            try:
+                os.rename(old_profile, new_profile)
+                print(f"Migrated Chrome profile to new location: {new_profile}")
+            except Exception as e:
+                print(f"Could not migrate legacy profile directory: {e}")
+
+
 async def rcv_web_int(
     model: str,
     payload: ClipboardPayload,
+    headful: bool = False,
 ) -> str:
     """
     Send a text prompt or image to an already-open AI web UI tab and
@@ -657,6 +675,8 @@ async def rcv_web_int(
             f"Unsupported model '{model}'. Choose from: {list(EDITOR_SELECTORS)}"
         )
 
+    migrate_profile_if_needed()
+
     async with async_playwright() as p:
         try:
             browser = await p.chromium.connect_over_cdp(DEBUG_PORT)
@@ -665,7 +685,7 @@ async def rcv_web_int(
                 chrome_path = find_chrome_executable()
                 user_data_dir = os.path.join(
                     os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-                    "headless-gpt-chrome-profile"
+                    "browser-agent-chrome-profile"
                 )
                 os.makedirs(user_data_dir, exist_ok=True)
                 
@@ -677,6 +697,9 @@ async def rcv_web_int(
                     "--no-first-run",
                     "--no-default-browser-check",
                 ]
+                if not headful:
+                    # On Windows, we launch headfully but minimized to bypass Cloudflare and Turnstile challenges
+                    cmd.append("--window-state=minimized")
                 try:
                     subprocess.Popen(cmd)
                 except FileNotFoundError:
@@ -687,19 +710,22 @@ async def rcv_web_int(
             else:
                 # Launch Xvfb first, then Chromium against it
                 subprocess.Popen(["Xvfb", ":99", "-screen", "0", "1920x1080x24"])
-                # Playwright doesn't require high res - keeping for future use as high res memory consumption is negligible
                 await asyncio.sleep(2)
 
+                cmd = [
+                    "chromium",
+                    "--remote-debugging-port=9222",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--enable-blink-features=DragInterception",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ]
+                if not headful:
+                    cmd.append("--headless")
+                
                 subprocess.Popen(
-                    [
-                        "chromium",
-                        "--remote-debugging-port=9222",
-                        "--no-sandbox",
-                        "--disable-gpu",
-                        "--enable-blink-features=DragInterception",
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                    ],
+                    cmd,
                     env={**os.environ, "DISPLAY": ":99"},
                 )
 
@@ -728,6 +754,13 @@ async def rcv_web_int(
             page = await ctx.new_page()
             await page.goto(urls[model], wait_until="domcontentloaded")
             await page.wait_for_timeout(2000)
+
+        # If we are just launching in headful mode to log in and the payload is empty
+        if headful and payload.kind == ClipboardKind.EMPTY:
+            print("Browser launched in headful mode. Please log in to your AI provider, then close the browser window or press Ctrl+C to stop.")
+            # Keep browser alive
+            while True:
+                await asyncio.sleep(1)
 
         last_exc: Optional[Exception] = None
 
@@ -771,22 +804,37 @@ async def rcv_web_int(
 
 
 async def main() -> None:
+    headful = "--headful" in sys.argv or "--login" in sys.argv
 
-    with open(Path("~/env-settings.json").expanduser()) as f:
+    # Try browser-agent-settings.json first, fall back to env-settings.json
+    settings_path = Path("~/browser-agent-settings.json").expanduser()
+    if not settings_path.exists():
+        settings_path = Path("~/env-settings.json").expanduser()
+
+    if not settings_path.exists():
+        print(f"Error: Settings file not found. Please create {Path('~/browser-agent-settings.json').expanduser()} with your configuration.")
+        return
+
+    with open(settings_path) as f:
         data = json.load(f)
     MODEL = data["model"]
+    
     payload = read_clipboard()
 
-    if payload.kind == ClipboardKind.EMPTY:
-        print("Clipboard is empty.")
+    if payload.kind == ClipboardKind.EMPTY and not headful:
+        print("Clipboard is empty. Copy some text or an image first.")
+        print("If you want to log in, run: browser-agent --login")
         return
 
     kind_label = "image" if payload.kind == ClipboardKind.IMAGE else "text"
-    print(f"Clipboard contains {kind_label} - sending to {MODEL}")
+    if payload.kind != ClipboardKind.EMPTY:
+        print(f"Clipboard contains {kind_label} - sending to {MODEL}")
 
-    response = await rcv_web_int(MODEL, payload)
-    pyperclip.copy(response)
-    type_response_fallback()
+    response = await rcv_web_int(MODEL, payload, headful=headful)
+    
+    if payload.kind != ClipboardKind.EMPTY:
+        pyperclip.copy(response)
+        type_response_fallback()
 
 
 if __name__ == "__main__":

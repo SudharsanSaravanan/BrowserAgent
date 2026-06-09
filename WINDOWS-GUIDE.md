@@ -1,8 +1,8 @@
-# Headless-GPT: Windows Setup & Usage Guide
+# BrowserAgent: Windows Setup & Usage Guide
 
-This guide explains how to configure, run, and use **headless-gpt** on Windows. 
+This guide explains how to configure, run, and use **BrowserAgent** on Windows. 
 
-The tool runs in the background, reads your clipboard (supporting both text prompts and images), sends it to your selected AI web UI tab (ChatGPT, Gemini, or Claude), waits for the response, copies the response back to your clipboard, and automatically pastes it into your active window.
+The tool runs in the background, reads your clipboard (supporting both text prompts and images), sends it to your selected AI web UI tab (ChatGPT, Gemini, or Claude) in a headless browser, waits for the response, copies the response back to your clipboard, and automatically pastes it into your active window.
 
 ---
 
@@ -23,7 +23,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure Your AI Provider
-Create a configuration file named `env-settings.json` in your User Home directory (`C:\Users\<Your-Username>\env-settings.json`).
+Create a configuration file named `browser-agent-settings.json` (or the legacy name `env-settings.json`) in your User Home directory (`C:\Users\<Your-Username>\browser-agent-settings.json`).
 
 Add the following JSON configuration:
 ```json
@@ -34,8 +34,8 @@ Add the following JSON configuration:
 *Replace `"chatgpt"` with `"gemini"` or `"claude"` depending on your preferred provider.*
 
 ### 3. Add to Windows PATH
-To run `headless-gpt` from any command prompt or terminal:
-1. Open PowerShell as an administrator or regular user.
+To run `BrowserAgent` from any command prompt or terminal:
+1. Open PowerShell.
 2. Run the provided path installer script:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\install-path.ps1
@@ -46,22 +46,24 @@ To run `headless-gpt` from any command prompt or terminal:
 
 ## 🚀 How to Use
 
-### 1. First-Time Run (Login)
-Because ChatGPT, Gemini, and Claude use bot-protection (like Cloudflare Turnstile) and require authentication, you must log in once:
-1. Copy any text to your clipboard (`Ctrl+C`).
-2. Run `headless-gpt` in your command prompt:
+### 1. First-Time Run (Login Setup)
+Because ChatGPT, Gemini, and Claude use bot-protection (like Cloudflare Turnstile) and require authentication, you must log in once using headful mode:
+1. Run `browser-agent --login` (or `BrowserAgent --login`) in your command prompt:
    ```cmd
-   headless-gpt
+   browser-agent --login
    ```
-3. A Chrome/Edge window will open with a dedicated profile (`headless-gpt-chrome-profile`).
-4. **Log in manually** to your selected AI provider (ChatGPT, Gemini, or Claude).
-5. Once logged in, the script will detect the editor, paste your clipboard, and get the response.
+2. A Chrome/Edge window will open with a dedicated profile (`browser-agent-chrome-profile`). Any existing login session from the legacy profile will be migrated automatically.
+3. **Log in manually** to your selected AI provider (ChatGPT, Gemini, or Claude).
+4. Once logged in, you can close the Chrome/Edge window or press `Ctrl+C` to terminate the process.
 
-### 2. Daily Workflow
-After the first login, you do not need to keep Chrome open or log in again. 
+### 2. Daily Workflow (Headless/Hidden)
+After the first login, Chrome will run completely in the background without opening any visible window:
 1. Copy a prompt or take a screenshot to your clipboard.
-2. Trigger `headless-gpt`.
-3. The script will automatically launch/connect to the debugging browser in the background, send the query, copy the response to your clipboard, and simulate `Ctrl+V` to paste the response instantly into your active text editor!
+2. Run `browser-agent` (or `BrowserAgent`):
+   ```cmd
+   browser-agent
+   ```
+3. The script will automatically launch/connect to the debugging browser in headless mode in the background, send the query, copy the response to your clipboard, and simulate `Ctrl+V` to paste the response instantly into your active text editor!
 
 ---
 
@@ -73,11 +75,11 @@ To make this tool feel like a native operating system feature, you can bind it t
 [AutoHotkey](https://www.autohotkey.com/) is a lightweight scripting language for Windows hotkeys.
 
 1. Install AutoHotkey (v1.1 or v2).
-2. Create a script file named `headless-gpt.ahk` anywhere on your computer:
+2. Create a script file named `browser-agent.ahk` anywhere on your computer:
    ```autohotkey
-   ; Win + G runs headless-gpt in the background (hidden window)
+   ; Win + G runs browser-agent in the background (hidden window)
    #g::
-   Run, headless-gpt, , Hide
+   Run, browser-agent, , Hide
    return
    ```
 3. Double-click the `.ahk` file to run it. 
